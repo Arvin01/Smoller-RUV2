@@ -87,4 +87,18 @@ all(colnames(exp.data) == rownames(exp.meta))
 
 ```
 
+```{r setup for RUV}
+
+eset<-new("ExpressionSet", phenoData=as(exp.meta, "AnnotatedDataFrame"), exprs=exp.data)
+mod <- model.matrix(~Age -1, pData(eset))
+X<-as.matrix(mod[,1])
+Y<-t(exp.data)
+
+# Get gene annotations
+gpl <- getGEO('GPL4611', destdir=file.path(dataDir, 'geo'))
+annot <- Table(gpl)[, c('ID', 'Gene_Symbol', 'Entrez_Gene_ID')]
+
+rownames(annot)<-annot[,1]
+annot<-annot[,-1]
+```
 
