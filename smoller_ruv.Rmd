@@ -1,0 +1,90 @@
+Smoller RUV-2 
+========================================================
+
+```{r setup, echo=FALSE}
+opts_chunk$set(tidy=TRUE, echo=TRUE, highlight=TRUE, figalign='center', fig.height=9, fig.width=9, out.width='800px', message=FALSE, error=TRUE, warning=FALSE, cache=FALSE)
+
+# Setup report details
+clientname="Erin Dunn"
+clientemail="erindunn@pngu.mgh.harvard.edu"
+lablocation="MGH"
+analystname="Meeta Mistry"
+analystemail="mmistry@hsph.harvard.edu"
+```
+
+Array analysis for `r clientname` (`r clientemail`) at `r lablocation`. Contact `r analystname` (`r analystemail`) for additional details. Request from client was:
+
+Test for differential gene expression between brain samples taken at different ages as part of the [BrainCloud](http://braincloud.jhmi.edu/BrainCloudHelp.htm) project. 
+
+> RNA from 269 human prefrontal cortex samples ranging from fetal development (negative ages) through aging (80 years) were analyzed on custom 2-color microarrays from the National Human Genome Research Institute (NHGRI) microarray core facility using a reference RNA comprised of a pool of all samples.
+
+# Workflow
+Try starting from the pre-'cleaned' data and remove the effects of confounders using [RUV-2](http://www.stat.berkeley.edu/~johann/ruv/).
+
+## Setup
+
+### Bioconductor and R libraries used
+
+```{r libraries, echo=TRUE}
+library(ggplot2)
+library(gtable)
+library(scales)
+library(GGally)
+library(RColorBrewer)
+library(GEOquery)
+library(affy)
+library(arrayQualityMetrics)
+library(hgu133plus2.db)
+library(reshape)
+library(xtable)
+library(ruv)
+library(limma)
+library(Biobase)
+
+# Grab John Hutchinson's convenience functions
+source("http://dl.dropboxusercontent.com/u/4253254/Resources/functions.r")
+```
+
+```{r variables, echo=TRUE}
+# Setup Data and Results directory variables
+baseDir <- '.'
+dataDir <- file.path(baseDir, "data")
+metaDir <- file.path(dataDir, "meta")
+resultsDir <- file.path(baseDir, "results")
+#covarsfilename <- 'covdesc.txt'
+```
+
+### Load the data and metadata
+
+```{r dataimport GEO}
+# Load GEO data
+geo<-getGEO('GSE30272', destdir=file.path(dataDir, 'geo/'))
+geo <- gse30272[[1]]
+
+# Characterize what we have
+show(geo)
+
+# Get expression data matrix
+exp.data<-exprs(geo)
+dim(exp.data)
+```
+
+
+```{r metadataImport}
+meta <- read.table(file.path(metaDir, 'brain_pheno2-txt.tsv'),
+                   header=TRUE, sep='\t', na.strings='NULL', row.names=1)
+
+# Remove outlier samples
+remove<-c(which(meta$Race == "HISP"), which (meta$Race == "AS"), which(meta$Gender == 5))
+newMeta<-meta[-remove,]
+newMeta<-newMeta[order(newMeta$Age),]
+
+# Align metadata order with expression data
+exp.data<-exp.data[,which(colnames(exp.data) %in% rownames(newMeta))]
+newOrder <- match(colnames(exp.data), rownames(newMeta))
+exp.meta <- newMeta[as.vector(newOrder), ]
+all(colnames(exp.data) == rownames(exp.meta))
+
+```
+
+
