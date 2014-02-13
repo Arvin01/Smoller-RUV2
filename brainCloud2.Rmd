@@ -1,0 +1,291 @@
+
+
+```{r setup, echo=FALSE}
+library(knitr)
+setwd("~/R/Smoller - Brain time series")
+
+opts_chunk$set(tidy=TRUE, echo=TRUE, highlight=TRUE, figalign='center', fig.height=9, fig.width=9, out.width='800px', message=FALSE, error=TRUE, warning=FALSE, cache=FALSE)
+
+# Setup report details
+clientname="Erin Dunn"
+clientemail="erindunn@pngu.mgh.harvard.edu"
+lablocation="MGH"
+analystname="Meeta Mistry"
+analystemail="meeta.mistry@gmail.com"
+```
+
+Array analysis for `r clientname` (`r clientemail`) at `r lablocation`. Contact `r analystname` (`r analystemail`) for additional details. Request from client was:
+  
+  Test for differential gene expression between brain samples taken at different ages as part of the [BrainCloud](http://braincloud.jhmi.edu/BrainCloudHelp.htm) project. 
+
+> RNA from 269 human prefrontal cortex samples ranging from fetal development (negative ages) through aging (80 years) were analyzed on custom 2-color microarrays from the National Human Genome Research Institute (NHGRI) microarray core facility using a reference RNA comprised of a pool of all samples.
+
+
+Preliminary analysis with the 'cleaned' data shows that PMI is perhaps confounded with Age (our factor of interest). The cleaning involves using SVA and then regressing out the effect of surrogate variables so the expression data we are using is strictly from the age effect.
+
+The fact that we see this confounding in the 'clean' data means that the SVA did not remove the effect of PMI. Not surprising, SVA is not useful when effects are confounded. The alternative is to use not clean data (pre-filtering and pre-SVA) and use other methods to try and correct/control for PMI.
+ 
+
+The most recent update of this html document occurred: `r date()`. The sections below provide descriptions of the included results and include code to reproduce them. 
+
+## Setup
+
+### Bioconductor and R libraries used
+
+```{r libraries, echo=TRUE}
+library(ggplot2)
+library(gtable)
+library(scales)
+library(GGally)
+library(RColorBrewer)
+library(GEOquery)
+#library(affy)
+#library(arrayQualityMetrics)
+library(sva)
+library(Biobase)
+#library(hgu133plus2.db)
+#library(reshape)
+#library(biomaRt)
+#library(sm)
+#library(proxy)
+library(xtable)
+#library(pvclust)
+
+# Grab John Hutchinson's convenience functions
+source("http://dl.dropboxusercontent.com/u/4253254/Resources/functions.r")
+```
+
+Set up project structure and variables:
+
+```{r VARIABLES, echo=TRUE}
+# Setup Data and Results directory variables.
+baseDir <- '..'
+dataDir <- file.path(baseDir, "data")
+metaDir <- file.path(dataDir, "meta")
+resultsDir <- file.path(baseDir, "results")
+#covarsfilename <- 'covdesc.txt'
+```
+## Data exploration
+
+Phenotype data was edited from the orginal to now include RIN values and smoking. The Refine project can be downloaded at [this link](./results/meta/brain_pheno2-txt.google-refine.tar.gz) including a history of all data transformation steps.
+ 
+
+```{r metadataImport}
+meta <- read.table(file.path(metaDir, 'brain_pheno2-txt.tsv'),
+                   header=TRUE, sep='\t', na.strings='NULL')
+length(meta$geo_accession)
+colnames(meta)
+```
+
+```{r testMeta}
+
+# Dropping the sample with gender '5'
+meta <- meta[meta$Gender != '5', ]
+meta$Gender <- factor(meta$Gender)
+dim(meta)
+
+# Age distribution
+summary(meta$Age)
+
+ggplot(meta, aes(Age)) +
+  geom_histogram() + 
+  xlab('Age Distribution') +
+  ylab('Count') +
+  theme(plot.title = element_text(size = rel(1.25)),
+        axis.title = element_text(size = rel(1.25)),
+        axis.text = element_text(size = rel(1.25)))
+
+# RIN distribution
+summary(meta$RIN)
+
+ggplot(meta, aes(RIN)) +
+  geom_histogram() + 
+  xlab('RIN Distribution') +
+  ylab('Count') +
+  theme(plot.title = element_text(size = rel(1.25)),
+        axis.title = element_text(size = rel(1.25)),
+        axis.text = element_text(size = rel(1.25)))
+```
+
+### Metadata dependencies
+
+Need to identify correlations between RIN and the other continuous variables, especially age.
+
+```{r correlationCheck}
+# ggpairs cannot handle missing data. Assigning mean as ph for missing data
+meta$ph<-as.numeric(as.character(meta$ph))
+metaCopy <- meta
+metaCopy$ph[is.na(metaCopy$ph)] <- mean(as.numeric(meta$ph), na.rm=TRUE)
+
+# To keep things uncluttered split into subgroups. Continuous data first
+ggpairs(metaCopy[, c(4, 7, 8, 9)],
+        alpha=0.3,
+        lower = list(continuous="smooth", combo='box', discrete='ratio'),
+        upper = list(continuous="cor", combo='facethist', discrete='blank'))
+
+# Categorial next 
+ggpairs(metaCopy[, c(4, 5, 6)],
+        colour='Gender',
+        alpha=0.3,
+        lower = list(continuous="smooth", combo='box', discrete='ratio'),
+        upper = list(continuous="cor", combo='facethist', discrete='blank'))  
+```
+
+Strong correlation between age and PMI as observed previously, but we also find that RIN is negatively correlated to both PMI and age. So, if we are to remove the extreme samples based on PMI we will also likely be removing some of the best RNA quality samples.
+
+According to preliminary analysis, the PMI effect was not removed by SVs. Check to see if and how well the SVs correlate with PMI (and other factors). 
+
+```{r importSVData}
+
+svamat <- read.table(file.path(metaDir, 'GSE30272_SVN31Matrix.txt'),
+                   header=TRUE, sep='\t', na.strings='NULL', row.names=1)
+sum(rownames(svamat) %in% meta$geo_accession)
+svamat <- svamat[rownames(svamat) %in% meta$geo_accession,]
+
+# Find correlations with PMI
+corPMI<-apply(as.matrix(svamat), 2, function(x) cor(x, meta$PostmortemInterval))
+
+# Plot correlations between SVs and PMI
+newMeta<-merge(meta, svamat,
+                           by.x='geo_accession', by.y=0, sort=FALSE)
+test<-newMeta[,-c(2:6, 8:10)]
+t<-melt(test, measure.vars=colnames(test)[3:ncol(test)])
+
+ggplot(t, 
+       aes(x=value, y=PostmortemInterval)) + 
+  geom_point() + 
+  facet_wrap(~variable) +
+  ggtitle('Correlation with surrogate variables') + 
+  theme(plot.title = element_text(size = rel(1.25)),
+        axis.title = element_text(size = rel(1.25)),
+        axis.text = element_text(size = rel(1.25)))
+
+```
+Loooking at correlation values of the 31 SVs we find that correlations range from `r min(corPMI, na.rm=TRUE)` to `r max(corPMI, na.rm=TRUE)`. We find that `r names(corPMI)[which(corPMI == min(corPMI))]` shows a fairly strong negative correlation of `r corPMI[which(corPMI == min(corPMI))]`. 
+
+```{r plotFig1, echo=FALSE}
+        ggplot(newMeta, aes(x=SV2, y=PostmortemInterval)) + geom_point()
+```
+
+
+If we run SVA on the expression data in GEO, we find somewhat different results.
+
+```{r createSV}
+
+# Import expression data
+gpl <- getGEO('GSE30272', destdir=file.path(dataDir, 'geo'))
+eset<-as(gpl$GSE30272_series_matrix.txt.gz, "ExpressionSet")
+expression<-exprs(eset)
+colnames(expression)<-pData(eset)$title
+
+sum(colnames(expression) %in% meta$geo_accession)
+expression <- expression[, colnames(expression) %in% meta$geo_accession]
+all(colnames(expression) == meta$geo_accession)
+
+# Setup for SVA
+mod<-model.matrix(~Age, data=meta)
+mod0<-model.matrix(~1, data=meta)
+n.sv = num.sv(expression,mod,method="be") #optional
+svobj<-sva(expression, mod, mod0, method="irw", n.sv=n.sv)
+
+# Check correlations for SVs
+svamat2<-data.frame(svobj$sv, row.names=colnames(expression))
+colnames(svamat2)<-c(paste("SV", seq(1:n.sv), sep=""))
+
+newMeta<-merge(meta, svamat2,by.x='geo_accession', by.y=0, sort=FALSE)
+corPMI<-apply(as.matrix(svamat2), 2, function(x) cor(x, newMeta$PostmortemInterval))
+test<-newMeta[,-c(2:6, 8:10)]
+t<-melt(test, measure.vars=colnames(test)[3:ncol(test)])
+
+ggplot(t, 
+       aes(x=value, y=PostmortemInterval)) + 
+  geom_point() + 
+  facet_wrap(~variable) +
+  ggtitle('Correlation with surrogate variables') + 
+  theme(plot.title = element_text(size = rel(1.25)),
+        axis.title = element_text(size = rel(1.25)),
+        axis.text = element_text(size = rel(1.25)))
+
+```
+
+Conducting SVA on the filtered expression data (same number of probes), we find there are `r n.sv` surrogate variables. The correlation of SVs with PMI range from `r min(corPMI, na.rm=TRUE)` to `r max(corPMI, na.rm=TRUE)`. We find that `r names(corPMI)[which(corPMI == max(corPMI))]` shows a fairly strong positive correlation of `r corPMI[which(corPMI == max(corPMI))]`.
+
+```{r plotFig2, echo=FALSE}
+        ggplot(newMeta, aes(x=SV1, y=PostmortemInterval)) + geom_point()
+```
+
+Are these SVs accounting for PMI? We need to compare the expression changes for housekeeping genes for 1) raw expression 2) Braincloud cleaned data 3) Our cleaned data
+
+
+```{r compareData}
+
+cleaned <- read.table(file.path(dataDir, 
+                                   'GSE30272_ExprsMtxCleanedN269_31SVN.txt'),
+                         header=TRUE, sep='\t', row.names=1)
+cleaned <- cleaned[, colnames(cleaned) %in% meta$geo_accession]
+
+# Align metadata order with expression data
+newOrder <- match(meta$geo_accession, colnames(cleaned))
+cleaned <- cleaned[, as.vector(newOrder)]
+all(colnames(cleaned) == meta$geo_accession)
+
+# Regress out the surrogate variables for our 'cleaned' version
+
+cleaningP = function(y,mod, svaobj,P=ncol(mod)) {
+  X=cbind(mod,svaobj$sv) # new model matrix with SVs
+  Hat=solve(t(X)%*%X)%*%t(X) # Hat matrix of design matrix
+  beta=(Hat%*%t(y)) # the regression
+  cleany=y-t(as.matrix(X[,-c(1:P)])%*%beta[-c(1:P),]) # regress out columns past column P
+  return(cleany)
+}
+
+cleaned2 <- cleaningP(expression, mod, svobj)
+colnames(cleaned2)<-colnames(expression)
+
+
+```
+
+## Housekeeping genes and markers
+Now we compare our housekeeping genes and how they change with respect to the expression data used.
+
+```{r hk}
+
+annot<-fData(eset)
+
+# Subset expression data to genes of interest
+hk <- expression.annot[expression.annot$Gene_Symbol %in%
+                         c('C1orf43', 'CHMP2A', 'GPI', 
+                           'PSMB2', 'REEP5', 'SNRPD3',                           
+                           'GDNF', 'NGF', 'GRIN2B'), ]
+
+# Merge with phenotype information
+df <- melt(hk)
+df <- merge(df, meta, by.x='variable', by.y='geo_accession')
+
+```
+
+
+
+
+If we just stick with the data we have been using we could remove the samples of PMI in the first and third quartiles. Problem with doing this is that since it is correlated with age we might remove specific age ranges. 
+
+1. Look at the difference in age distribution with the PMI quartiles removed. Are we looking for developmental effects? Should we be using regresison splines to account for flexible relationships between age and expression/ knots at particular age time points?
+
+Can we remove PMI effects in some other way? 
+If "PMI is just a surrogate for tissue quality, among others"
+
+2. Look at how RIN correlates with PMI. Include this in our metadata
+
+3. Look at the data for those same housekeeping genes and see if the effect of PMI is removed using SVA as they claim
+
+Next:
+- go fwd with SVA31 dataset and use STEM; get immediate results
+- in the background  try RUV on raw data - and then go to STEM to see what differences arise
+
+```{r}
+
+# # This does the same thing, but is quite timely
+# mdata <- melt(df, id.vars="AgeGroup", na.rm=T)
+# mdata$value<-type.convert(as.character(mdata$value))
+# agemeans <- cast(mdata, AgeGroup~variable, mean)
+```

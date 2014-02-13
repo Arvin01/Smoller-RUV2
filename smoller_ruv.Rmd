@@ -57,16 +57,16 @@ resultsDir <- file.path(baseDir, "results")
 ### Load the data and metadata
 
 ```{r dataimport GEO}
+
 # Load GEO data
-geo<-getGEO('GSE30272', destdir=file.path(dataDir, 'geo/'))
-geo <- gse30272[[1]]
+gpl <- getGEO('GSE30272', destdir=file.path(dataDir, 'geo'))
+eset<-as(gpl$GSE30272_series_matrix.txt.gz, "ExpressionSet")
 
-# Characterize what we have
-show(geo)
+# Get expression data
+expression<-exprs(eset)
+colnames(expression)<-pData(eset)$title
+dim(epxression)
 
-# Get expression data matrix
-exp.data<-exprs(geo)
-dim(exp.data)
 ```
 
 
@@ -80,19 +80,21 @@ newMeta<-meta[-remove,]
 newMeta<-newMeta[order(newMeta$Age),]
 
 # Align metadata order with expression data
-exp.data<-exp.data[,which(colnames(exp.data) %in% rownames(newMeta))]
-newOrder <- match(colnames(exp.data), rownames(newMeta))
-exp.meta <- newMeta[as.vector(newOrder), ]
-all(colnames(exp.data) == rownames(exp.meta))
+expression<-expression[,which(colnames(expression) %in% newMeta$geo_accession)]
+rownames(newMeta)<-newMeta$geo_accession
+newMeta<-newMeta[,-1]
+newOrder <- match(colnames(expression), rownames(newMeta))
+expression.meta <- newMeta[as.vector(newOrder), ]
+all(colnames(expression) == rownames(expression.meta))
 
 ```
 
 ```{r setup for RUV}
 
-eset<-new("ExpressionSet", phenoData=as(exp.meta, "AnnotatedDataFrame"), exprs=exp.data)
+pData(eset)<-newMeta
 mod <- model.matrix(~Age -1, pData(eset))
 X<-as.matrix(mod[,1])
-Y<-t(exp.data)
+Y<-t(expression)
 
 # Get gene annotations
 gpl <- getGEO('GPL4611', destdir=file.path(dataDir, 'geo'))
