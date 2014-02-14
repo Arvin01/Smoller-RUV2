@@ -43,6 +43,9 @@ library(Biobase)
 
 # Grab John Hutchinson's convenience functions
 source("http://dl.dropboxusercontent.com/u/4253254/Resources/functions.r")
+
+# Grab my functions
+source("~/R/scripts/rocR.R")
 ```
 
 ```{r variables, echo=TRUE}
@@ -54,48 +57,112 @@ resultsDir <- file.path(baseDir, "results")
 #covarsfilename <- 'covdesc.txt'
 ```
 
-### Load the data and metadata
+### Load the data
 
 ```{r dataimport GEO}
 
 # Load GEO data
 gpl <- getGEO('GSE30272', destdir=file.path(dataDir, 'geo'))
-eset<-as(gpl$GSE30272_series_matrix.txt.gz, "ExpressionSet")
+eset <- as(gpl$GSE30272_series_matrix.txt.gz, "ExpressionSet")
 
 # Get expression data
-expression<-exprs(eset)
-colnames(expression)<-pData(eset)$title
-dim(epxression)
+expression <- exprs(eset)
+colnames(expression) <- pData(eset)$title
+dim(expression)
 
 ```
 
+### Load the metadata and align with expression data
 
 ```{r metadataImport}
 meta <- read.table(file.path(metaDir, 'brain_pheno2-txt.tsv'),
                    header=TRUE, sep='\t', na.strings='NULL', row.names=1)
 
 # Remove outlier samples
-remove<-c(which(meta$Race == "HISP"), which (meta$Race == "AS"), which(meta$Gender == 5))
-newMeta<-meta[-remove,]
-newMeta<-newMeta[order(newMeta$Age),]
+remove <- c(which(meta$Race == "HISP"), which (meta$Race == "AS"), which(meta$Gender == 5))
+newMeta <- meta[-remove,]
+newMeta <- newMeta[order(newMeta$Age),]
 
 # Align metadata order with expression data
-expression<-expression[,which(colnames(expression) %in% newMeta$geo_accession)]
-rownames(newMeta)<-newMeta$geo_accession
-newMeta<-newMeta[,-1]
+expression <- expression[,which(colnames(expression) %in% newMeta$geo_accession)]
+rownames(newMeta) <- newMeta$geo_accession
+newMeta <- newMeta[,-1]
 newOrder <- match(colnames(expression), rownames(newMeta))
 expression.meta <- newMeta[as.vector(newOrder), ]
 all(colnames(expression) == rownames(expression.meta))
 
 ```
 
+### Housekeeping genes
+Our strategy is to use control genes. Negative control genes are genes whose expression levels are known a priori to be truly unassociated with the biological factor of interest. We'll use the 2003 list of housekeeping genes from Eisenberg and Levanon, 2003. ([Publication](http://www.sciencedirect.com.ezp-prod1.hul.harvard.edu/science/article/pii/S0168952503001409) found here), And filter out those unassociated with age, our factor of interest.
+
+```{r housekeeping genes, echo=TRUE}
+
+# Load housekeeping gene list of accession numbers
+hk.full <- read.delim(file.path(dataDir, 'HK_genes_2003.txt'), header=T)
+
+# Get all gene accession numbers
+probe.acc <- as.character(fData(eset)[,'GB_ACC'])
+x <- sapply(probe.acc, function(x){strsplit(x, ".", fixed=T)[[1]][1]})
+probe.acc <- as.vector(x)
+
+# Cross-reference the two
+hk.use <- rownames(expression)[which(probe.acc %in% hk.full[,1])]
+
+# A quick DE analysis to find genes DE with age
+mod <- model.matrix(~Age -1, data=expression.meta)
+fit <- lmFit(eset, mod)
+fit <- eBayes(fit)
+
+# Keep only HK genes that are not significantly associated with age
+gene_list <- topTable(fit, number=nrow(exprs(eset)))
+sig <- rownames(gene_list)[which(gene_list$adj.P.Val < 0.001)]
+hk.use <- hk.use[which(hk.use %in% sig == FALSE)]
+
+```
+
+
+
 ```{r setup for RUV}
 
-pData(eset)<-newMeta
+exprs(eset)<-expression
+pData(eset)<-expression.meta
+
 mod <- model.matrix(~Age -1, pData(eset))
 X<-as.matrix(mod[,1])
 Y<-t(expression)
+ctl<-rep("FALSE", nrow(expression))
+ctl[which(rownames(expression) %in% hk.use)]<-"TRUE"
+ctl<-as.logical(ctl)
 
+# A quick first look at the data
+ruv_starter_analysis(Y, X, ctl)
+
+```
+Results from the RUV report can be found [here](~/R/Smoller-RUV2/html/index.html)
+
+
+### Find best k value
+A critical step in RUV-2 is determining the number k of factors to remove. In general, this is difficult, and there is no clear way to determine k. Generally, RLE plots and p-value histograms have been found to be helpful. Based on the cancor plot below
+
+The cancor plot shows, for each value of K, the square of the first canonical correlation between X and the first K left singular values of Y (black) and Y_c (green). The fact that the green curve stays relatively low when the black curve jumps up (around K = 10) suggests that the negative controls are relatively uninfluenced by X, and therefore probably are in fact good negative controls. Even at the smallest values of K we see relatively strong correlations between W and X - problematic? Where do we set K? 
+
+![image](./html/cancor/cancor.png)
+
+For further diagnostics, we can evaluate p-value distriutions and RLE plots from the unadjusted data to the RUV data. Put in images for comparison
+
+```{r RUV2}
+
+
+ruv30<-RUV2(Y, X, ctl, k=30)
+
+```
+
+
+
+
+
+```{r}
 # Get gene annotations
 gpl <- getGEO('GPL4611', destdir=file.path(dataDir, 'geo'))
 annot <- Table(gpl)[, c('ID', 'Gene_Symbol', 'Entrez_Gene_ID')]
