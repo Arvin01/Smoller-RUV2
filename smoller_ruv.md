@@ -2,18 +2,10 @@ Smoller RUV-2
 ========================================================
 
 
-```{r setup, echo=FALSE}
-opts_chunk$set(tidy=TRUE, echo=TRUE, highlight=TRUE, figalign='center', fig.height=9, fig.width=9, out.width='800px', message=FALSE, error=TRUE, warning=FALSE, cache=FALSE)
 
-# Setup report details
-clientname="Erin Dunn"
-clientemail="erindunn@pngu.mgh.harvard.edu"
-lablocation="MGH"
-analystname="Meeta Mistry"
-analystemail="mmistry@hsph.harvard.edu"
-```
 
-Array analysis for `r clientname` (`r clientemail`) at `r lablocation`. Contact `r analystname` (`r analystemail`) for additional details. Request from client was:
+
+Array analysis for Erin Dunn (erindunn@pngu.mgh.harvard.edu) at MGH. Contact Meeta Mistry (mmistry@hsph.harvard.edu) for additional details. Request from client was:
 
 Test for differential gene expression between brain samples taken at different ages as part of the [BrainCloud](http://braincloud.jhmi.edu/BrainCloudHelp.htm) project. 
 
@@ -26,7 +18,8 @@ Try starting from the pre-'cleaned' data and remove the effects of confounders u
 
 ### Bioconductor and R libraries used
 
-```{r libraries, echo=TRUE}
+
+```r
 library(ggplot2)
 library(gtable)
 library(scales)
@@ -48,103 +41,127 @@ source("http://dl.dropboxusercontent.com/u/4253254/Resources/functions.r")
 source("~/R/scripts/useful_functions.R")
 ```
 
-```{r variables, echo=TRUE}
+
+
+```r
 # Setup directory variables
-baseDir <- '.'
+baseDir <- "."
 dataDir <- file.path(baseDir, "data")
 metaDir <- file.path(dataDir, "meta")
 resultsDir <- file.path(baseDir, "results")
-#covarsfilename <- 'covdesc.txt'
+# covarsfilename <- 'covdesc.txt'
 ```
+
 
 ### Load the expression data
 
-```{r dataimport GEO}
+
+```r
 
 # Load GEO data
-gpl <- getGEO('GSE30272', destdir=file.path(dataDir, 'geo'))
+gpl <- getGEO("GSE30272", destdir = file.path(dataDir, "geo"))
 eset <- as(gpl$GSE30272_series_matrix.txt.gz, "ExpressionSet")
 
 # Get expression data
 expression <- exprs(eset)
 colnames(expression) <- pData(eset)$title
 dim(expression)
+```
 
 ```
+## [1] 30176   269
+```
+
 
 ### Load the metadata and align with expression data
 
-```{r metadataImport}
-meta <- read.table(file.path(metaDir, 'brain_pheno2-txt.tsv'),
-                   header=TRUE, sep='\t', na.strings='NULL', row.names=1)
+
+```r
+meta <- read.table(file.path(metaDir, "brain_pheno2-txt.tsv"), header = TRUE, 
+    sep = "\t", na.strings = "NULL", row.names = 1)
 
 # Remove outlier samples
-remove <- c(which(meta$Race == "HISP"), which (meta$Race == "AS"), which(meta$Gender == 5))
-newMeta <- meta[-remove,]
-newMeta <- newMeta[order(newMeta$Age),]
+remove <- c(which(meta$Race == "HISP"), which(meta$Race == "AS"), which(meta$Gender == 
+    5))
+newMeta <- meta[-remove, ]
+newMeta <- newMeta[order(newMeta$Age), ]
 
 # Align metadata order with expression data
-expression <- expression[,which(colnames(expression) %in% newMeta$geo_accession)]
+expression <- expression[, which(colnames(expression) %in% newMeta$geo_accession)]
 rownames(newMeta) <- newMeta$geo_accession
-newMeta <- newMeta[,-1]
+newMeta <- newMeta[, -1]
 newOrder <- match(colnames(expression), rownames(newMeta))
 expression.meta <- newMeta[as.vector(newOrder), ]
 all(colnames(expression) == rownames(expression.meta))
-
-# Reassign the eset object
-exprs(eset)<-expression
-pData(eset)<-expression.meta
+```
 
 ```
+## [1] TRUE
+```
+
+```r
+
+# Reassign the eset object
+exprs(eset) <- expression
+pData(eset) <- expression.meta
+```
+
 
 ### Housekeeping genes
 Our strategy with RUV is to use control genes. Negative control genes are genes whose expression levels are known a priori to be truly unassociated with the biological factor of interest. We'll use the 2003 list of housekeeping genes from Eisenberg and Levanon, 2003. ([Publication](http://www.sciencedirect.com.ezp-prod1.hul.harvard.edu/science/article/pii/S0168952503001409) found here), And filter out those unassociated with age, our factor of interest.
 
-```{r housekeeping genes, echo=TRUE}
+
+```r
 
 # Load housekeeping gene list of accession numbers
-hk.full <- read.delim(file.path(dataDir, 'HK_genes_2003.txt'), header=T)
+hk.full <- read.delim(file.path(dataDir, "HK_genes_2003.txt"), header = T)
 
 # Get all gene accession numbers
-probe.acc <- as.character(fData(eset)[,'GB_ACC'])
-x <- sapply(probe.acc, function(x){strsplit(x, ".", fixed=T)[[1]][1]})
+probe.acc <- as.character(fData(eset)[, "GB_ACC"])
+x <- sapply(probe.acc, function(x) {
+    strsplit(x, ".", fixed = T)[[1]][1]
+})
 probe.acc <- as.vector(x)
 
 # Cross-reference the two
-hk.use <- rownames(expression)[which(probe.acc %in% hk.full[,1])]
+hk.use <- rownames(expression)[which(probe.acc %in% hk.full[, 1])]
 
 # A quick DE analysis to find genes DE with age
-mod <- model.matrix(~Age -1, data=expression.meta)
+mod <- model.matrix(~Age - 1, data = expression.meta)
 fit <- lmFit(eset, mod)
 fit <- eBayes(fit)
 
 # Keep only HK genes that are not significantly associated with age
-gene_list <- topTable(fit, number=nrow(exprs(eset)))
+gene_list <- topTable(fit, number = nrow(exprs(eset)))
 sig <- rownames(gene_list)[which(gene_list$adj.P.Val < 0.001)]
 hk.use <- hk.use[which(hk.use %in% sig == FALSE)]
-
 ```
-### RUV analysis
-From the original list of `r nrow(hk.full)` housekeeping genes we identified `r length(hk.use)` as control genes for input to RUV.
 
-```{r setup for RUV, echo=TRUE}
+### RUV analysis
+From the original list of 574 housekeeping genes we identified 209 as control genes for input to RUV.
+
+
+```r
 
 # Set up for RUV
-mod <- model.matrix(~Age -1, pData(eset))
-X<-as.matrix(mod[,1])
-Y<-t(expression)
-ctl<-rep("FALSE", nrow(expression))
-ctl[which(rownames(expression) %in% hk.use)]<-"TRUE"
-ctl<-as.logical(ctl)
+mod <- model.matrix(~Age - 1, pData(eset))
+X <- as.matrix(mod[, 1])
+Y <- t(expression)
+ctl <- rep("FALSE", nrow(expression))
+ctl[which(rownames(expression) %in% hk.use)] <- "TRUE"
+ctl <- as.logical(ctl)
 ```
 
 
-```{r ruv_starter_analysis, echo=TRUE, eval=FALSE}
+
+
+```r
 
 # A quick first look at the data
 ruv_starter_analysis(Y, X, ctl)
 
 ```
+
 
 Results from the RUV report can be found [here](https://dl.dropboxusercontent.com/s/n9q4tqmvt0iqm8e/index.html)
 
@@ -167,92 +184,27 @@ A critical step in RUV-2 is determining the number k of factors to remove. In ge
 ### Get cleaned data and check those same housekeeping genes.
 Next step is to explore a couple of genes of interest. I picked the same six recommended genes from the previous analysis and added in random brain markers, including NR2A/B (Grin2a/b). Using the expression data with SVs from RUV regressed out, we look at expression change.
 
-```{r RUV2, echo=FALSE}
-
-ruvunadj<-RUV2(Y, X, ctl, k=0)
-ruvk30<-RUV2(Y, X, ctl, k=30)
-
-ruvfit1 = variance_adjust(ruvk30)
-ruvfit2 = variance_adjust(ruvunadj)
-
-# Get SVA object
-svaobj<-as.matrix(ruvfit1$W)
-
-# Use cleaning function
-regressClean<-function(y,mod, svaobj,P=ncol(mod)) {
-  X=cbind(mod,svaobj) 
-  Hat=solve(t(X)%*%X)%*%t(X) 
-  beta=(Hat%*%t(y))
-  cleany=y-t(as.matrix(X[,-c(1:P)])%*%beta[-c(1:P),])
-  return(cleany)
-}
-
-ruvclean<-regressClean(expression, mod, svaobj) 
-
-# Get gene annotations
-gpl <- getGEO('GPL4611', destdir=file.path(dataDir, 'geo'))
-
-# Merge in the annotation data
-annot <- Table(gpl)[, c('ID', 'Gene_Symbol', 'Entrez_Gene_ID')]
-
-expression.annot <- merge(ruvclean, annot,
-                          by.x='row.names', by.y='ID', sort=FALSE)
-rownames(expression.annot) <- expression.annot$Row.names
-expression.annot <- expression.annot[, 2:length(colnames(expression.annot))]
-  
-```
 
 
 
-```{r}
+
+
+
+```r
 # Subset expression data to genes of interest
-hksub <- expression.annot[expression.annot$Gene_Symbol %in%
-                         c('C1orf43', 'CHMP2A', 'GPI', 
-                           'PSMB2', 'REEP5', 'SNRPD3',                           
-                           'GDNF', 'NGF', 'GRIN2B'), ]
+hksub <- expression.annot[expression.annot$Gene_Symbol %in% c("C1orf43", "CHMP2A", 
+    "GPI", "PSMB2", "REEP5", "SNRPD3", "GDNF", "NGF", "GRIN2B"), ]
 
 # Merge with phenotype information
 df <- melt(hksub)
-df <- merge(df, expression.meta, by.x='variable', by.y='row.names')
-
+df <- merge(df, expression.meta, by.x = "variable", by.y = "row.names")
 ```
+
 
 Expression changes with age, our main interest compared to PMI. Even though the changes are not identical as we saw with the original cleaned [BrainCloud data](https://dl.dropboxusercontent.com/u/407047/Work/Smoller/brainCloud.html), we still see a similarity in the trend. 
 
-```{r topPlot, echo=FALSE}
-p1 <- ggplot(df, aes(x=Age, y=value)) +
-  geom_smooth(method=loess) +
-  facet_wrap(~Gene_Symbol) +
-  theme(axis.title.x = element_blank(),
-        plot.margin = unit(c(1, 0, 1, 1), "lines")) + 
-  scale_y_continuous(limits = c(-0.5, 0.5), oob=rescale_none) +
-  ggtitle('Age') + 
-  ylab('Expression values')
+<img src="figure/topPlot.png" title="plot of chunk topPlot" alt="plot of chunk topPlot" width="800px" />
 
-p2 <- ggplot(df, aes(x=PostmortemInterval, y=value)) +
-  geom_smooth(method=loess) +
-  facet_wrap(~Gene_Symbol) +
-  theme(axis.title = element_blank(),  
-        axis.text.y = element_blank(),
-        plot.background = element_blank(),
-        axis.ticks.y = element_blank(),
-        plot.margin = unit(c(1, 1, 1, 0), "lines")) + 
-  scale_y_continuous(limits = c(-0.5, 0.5), oob=rescale_none) +
-  ggtitle('Postmortem Interval')
-
-# Set side-by-side
-gt1 <- ggplot_gtable(ggplot_build(p1))
-gt2 <- ggplot_gtable(ggplot_build(p2))
-newWidth = unit.pmax(gt1$widths[2:3], gt2$widths[2:3])
-
-# Set new size
-gt1$widths[2:3] = as.list(newWidth)
-gt2$widths[2:3] = as.list(newWidth)
-
-# Arrange
-grid.arrange(gt1, gt2, ncol=2)
-
-```
 
 
 
